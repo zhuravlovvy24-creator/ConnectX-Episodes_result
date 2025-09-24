@@ -1,2 +1,2 @@
-# ConnectX-Episods_result
-This code get episodesId for ConnectX competition and save the episode movements for each game
+# ConnectX-Episodes_result
+This code gets the episodesId for the ConnectX competition and saves the episode movements for each game.
