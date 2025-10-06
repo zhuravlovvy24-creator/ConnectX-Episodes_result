@@ -1,2 +1,5 @@
 Competitions.csv
 Episodes.csv
+venv/
+*.db
+*.csv
