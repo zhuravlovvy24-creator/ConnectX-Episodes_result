@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import os
 import sqlite3
+from datetime import datetime
 
 # Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
@@ -21,7 +22,7 @@ filtered_episodes = episodes_df[episodes_df['CompetitionId'] == competition_id.i
 # Get the list of episode IDs
 EpisodeId = filtered_episodes['Id'].tolist()
 
-# Create outpu_folder for episodes results
+# Create output_folder for episodes results
 OUTPUT_DIR = Path("Episodes_output")
 
 #Create DataBase
@@ -65,6 +66,17 @@ def save_episode(episode_id: int):
                 json.dump(replay, f)
             print(f"Episode {episode_id} successfully saved.")
 
+            # Insert record into SQLite DB
+            # -----------------------------
+            date_now = datetime.now().isoformat(timespec='seconds')
+            cursor.execute("""
+                           INSERT
+                           OR IGNORE INTO downloaded (episodeId, date, local_path)
+                           VALUES (?, ?, ?)
+                           """, (episode_id, date_now, str(filepath)))
+            conn.commit()
+            # -----------------------------
+
             # Append new ids in the downloaded list of episodes
             downloaded_id.add(str(episode_id))
         except Exception as e:
@@ -81,12 +93,12 @@ remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
 # Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
 
-# Function that input all episodes_ids and return filtered that has to be downloaded
+# Function that input all episodes_ids and return filtered those that has to be downloaded
 def get_new_episodes_id(all_ids: str):
     #Transform EpisodeId to str to compare with downloaded_id
-    all_ids = [str(eid) for eid in EpisodeId]
+    all_ids_str = [str(eid) for eid in all_ids]
     #Compare all_ids with downloaded_id
-    new_ids = [eid for eid in all_ids if eid not in downloaded_id]
+    new_ids = [eid for eid in all_ids_str if eid not in downloaded_id]
     return new_ids
 
 # Launch and Save the first 15 episodes
