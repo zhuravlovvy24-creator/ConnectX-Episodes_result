@@ -81,6 +81,14 @@ remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
 # Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
 
+# Function that input all episodes_ids and return filtered that has to be downloaded
+def get_new_episodes_id(all_ids: str):
+    #Transform EpisodeId to str to compare with downloaded_id
+    all_ids = [str(eid) for eid in EpisodeId]
+    #Compare all_ids with downloaded_id
+    new_ids = [eid for eid in all_ids if eid not in downloaded_id]
+    return new_ids
+
 # Launch and Save the first 15 episodes
 for eid in to_download:
     # Duplicates verification
