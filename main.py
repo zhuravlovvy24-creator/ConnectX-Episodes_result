@@ -33,7 +33,9 @@ conn = sqlite3.connect(DB_PATH)
 cursor = conn.cursor()
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS downloaded (
-    episodeId INTEGER PRIMARY KEY,
+    remainingIds INTEGER PRIMARY KEY,
+    EpisodeId INTEGER UNIQUE,
+    status TEXT,           -- 'downloaded' or 'remaining'
     date TEXT,
     local_path TEXT
 )
@@ -70,10 +72,18 @@ def save_episode(episode_id: int):
             # -----------------------------
             date_now = datetime.now().isoformat(timespec='seconds')
             cursor.execute("""
-                           INSERT
-                           OR IGNORE INTO downloaded (episodeId, date, local_path)
-                           VALUES (?, ?, ?)
-                           """, (episode_id, date_now, str(filepath)))
+                           UPDATE downloaded
+                           SET status     = 'downloaded',
+                               date       = ?,
+                               local_path = ?
+                           WHERE episodeId = ?
+                           """, (date_now, str(filepath), episode_id))
+            # If episode was not in table before — insert it
+            if cursor.rowcount == 0:
+                cursor.execute("""
+                               INSERT INTO downloaded (episodeId, status, date, local_path)
+                               VALUES (?, 'downloaded', ?, ?)
+                               """, (episode_id, date_now, str(filepath)))
             conn.commit()
             # -----------------------------
 
@@ -89,6 +99,14 @@ episode_ids_all = [str(eid) for eid in EpisodeId]
 
 # Comparing episode_ids_all with downloaded_id
 remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
+
+# Record remaining episodes in DB
+for eid in remaining_ids:
+    cursor.execute("""
+        INSERT OR IGNORE INTO downloaded (episodeId, status)
+        VALUES (?, 'remaining')
+    """, (int(eid),))
+conn.commit()
 
 # Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
