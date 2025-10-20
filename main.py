@@ -110,11 +110,5 @@ for eid in to_download:
         continue # skip function launch
     save_episode(int(eid))
 
-# Transform Set downloaded_id into DataFrame
-downloaded_id_df = pd.DataFrame({"Downloaded_Episode_id": list(downloaded_id)})
-
-# Save into csv
-downloaded_id_df.to_csv("Downloaded_Episodes_id.csv", index=False)
-
 # Close connection
 conn.close()
