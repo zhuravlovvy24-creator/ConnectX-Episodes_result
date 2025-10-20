@@ -8,47 +8,66 @@ from datetime import datetime
 
 # Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
-#print(df.head())
-
 # Filter rows where id == 17592
 competition_id = df[df['Slug'] == 'connectx']['Id']
-
 # Load the episodes dataset
 episodes_df = pd.read_csv('Episodes.csv')  # adjust the path if needed
-
 # Filter rows where competitionId == 17592
 filtered_episodes = episodes_df[episodes_df['CompetitionId'] == competition_id.item()]
-
 # Get the list of episode IDs
 EpisodeId = filtered_episodes['Id'].tolist()
-
 # Create output_folder for episodes results
 OUTPUT_DIR = Path("Episodes_output")
-
 #Create DataBase
 DB_PATH = "downloaded_episodes_id.db"
 
 #Create DB and table
-conn = sqlite3.connect(DB_PATH)
-cursor = conn.cursor()
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS downloaded (
-    episodeId INTEGER PRIMARY KEY,
-    date TEXT,
-    local_path TEXT
-)
-""")
-
-conn.commit()
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS downloaded (
+        episodeId INTEGER PRIMARY KEY,
+        date TEXT,
+        local_path TEXT
+    )
+    """)
+    conn.commit()
+    return conn, cursor
 
 LOWEST_SCORE_THRESH = 2000
 EPISODE_LIMIT_SIZE = 15
 
 #List of downloaded id's Beginning-----------------------------------
-# Get the list of ids' of all files from folder Episodes_output
-downloaded_files = {f for f in os.listdir(OUTPUT_DIR)
+# Get the list of all downloaded ids' from DB
+def load_downloaded_ids(cursor):
+    cursor.execute("SELECT episodeId FROM downloaded")
+    return {str(row[0]) for row in cursor.fetchall()}
+
+#Add already-downloaded files to DB
+def sync_local_files_with_db(cursor, downloaded_id: set):
+    downloaded_files = {f for f in os.listdir(OUTPUT_DIR)
                     if f.endswith('.json')}
-downloaded_id = {os.path.splitext(f)[0] for f in downloaded_files}
+
+    for filename in downloaded_files:
+        try:
+            existing_episode_id = int(os.path.splitext(filename)[0])
+            filepath = OUTPUT_DIR / filename
+            file_timestamp = datetime.fromtimestamp(filepath.stat().st_mtime).isoformat(timespec='seconds')
+
+            # Insert into DB if not already there
+            cursor.execute("""
+                INSERT OR IGNORE INTO downloaded (episodeId, date, local_path)
+                VALUES (?, ?, ?)
+            """, (existing_episode_id, file_timestamp, str(filepath)))
+
+            # Add to set of downloaded IDs
+            downloaded_id.add(str(existing_episode_id))
+
+        except ValueError:
+            # Skip files with unexpected names (e.g. not numeric)
+            print(f"Skipping file '{filename}' (invalid episode ID format)")
+    return downloaded_id
 #List of downloaded id's End-----------------------------------------
 
 # Function for  saving the episodes results in json format
@@ -87,19 +106,25 @@ def save_episode(episode_id: int):
 # Transform EpisodeId to str to compare with downloaded_id
 episode_ids_all = [str(eid) for eid in EpisodeId]
 
+conn, cursor = init_db()
+downloaded_id = load_downloaded_ids(cursor)
+
+downloaded_id = sync_local_files_with_db(cursor, downloaded_id)
+conn.commit()
+
+def show_downloaded_from_db(cursor):
+    cursor.execute("SELECT episodeId, date, local_path FROM downloaded")
+    rows = cursor.fetchall()
+
+    print("\n Загруженные эпизоды в базе данных:")
+    for row in rows:
+        print(f"EpisodeID: {row[0]}, Date: {row[1]}, Path: {row[2]}")
+
 # Comparing episode_ids_all with downloaded_id
 remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
 
 # Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
-
-# Function that input all episodes_ids and return filtered those that has to be downloaded
-def get_new_episodes_id(all_ids: str):
-    #Transform EpisodeId to str to compare with downloaded_id
-    all_ids_str = [str(eid) for eid in all_ids]
-    #Compare all_ids with downloaded_id
-    new_ids = [eid for eid in all_ids_str if eid not in downloaded_id]
-    return new_ids
 
 # Launch and Save the first 15 episodes
 for eid in to_download:
@@ -110,5 +135,17 @@ for eid in to_download:
         continue # skip function launch
     save_episode(int(eid))
 
+# Show the updated DB data
+show_downloaded_from_db(cursor)
+
 # Close connection
 conn.close()
+
+#Hidden_____________
+# Function that input all episodes_ids and return filtered those that has to be downloaded
+#def get_new_episodes_id(all_ids: str):
+    #Transform EpisodeId to str to compare with downloaded_id
+    #all_ids_str = [str(eid) for eid in all_ids]
+    #Compare all_ids with downloaded_id
+    #new_ids = [eid for eid in all_ids_str if eid not in downloaded_id]
+    #return new_ids
