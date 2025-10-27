@@ -12,8 +12,22 @@ df = pd.read_csv('Competitions.csv')
 competition_id = df[df['Slug'] == 'connectx']['Id']
 # Load the episodes dataset
 episodes_df = pd.read_csv('Episodes.csv')  # adjust the path if needed
+#Set the min top players with Score >3000
+LOWEST_SCORE_THRESH = 3000.0
+#Load the EpisodeAgents dataset
+high_score_episode_ids = set()
+chunksize = 500_000
+
+for chunk in pd.read_csv('EpisodeAgents.csv', chunksize=chunksize,
+                         dtype={'EpisodeId': 'int32', 'UpdatedScore': 'float32'}):
+    high_score_chunk = chunk[chunk['UpdatedScore'] > LOWEST_SCORE_THRESH]
+    high_score_episode_ids.update(high_score_chunk['EpisodeId'].unique())
 # Filter rows where competitionId == 17592
 filtered_episodes = episodes_df[episodes_df['CompetitionId'] == competition_id.item()]
+#Create Data Frame with the episodes >3000
+filtered_episodes_df = filtered_episodes[filtered_episodes['Id'].isin(high_score_episode_ids)]
+# save into CSV
+filtered_episodes_df.to_csv('FilteredEpisodes_UpdatedScoreAbove3000.csv', index=False)
 # Get the list of episode IDs
 EpisodeId = filtered_episodes['Id'].tolist()
 # Create output_folder for episodes results
@@ -35,7 +49,6 @@ def init_db():
     conn.commit()
     return conn, cursor
 
-LOWEST_SCORE_THRESH = 2000
 EPISODE_LIMIT_SIZE = 15
 
 #List of downloaded id's Beginning-----------------------------------
@@ -103,22 +116,14 @@ def save_episode(episode_id: int):
     else:
         print(f"Request error for episode {episode_id}: status {re.status_code}")
 
-# Transform EpisodeId to str to compare with downloaded_id
-episode_ids_all = [str(eid) for eid in EpisodeId]
+# Transform EpisodeId to str and filter for top score > 3000.0 to compare with downloaded_id
+episode_ids_all = [str(eid) for eid in EpisodeId if eid in high_score_episode_ids]
 
 conn, cursor = init_db()
 downloaded_id = load_downloaded_ids(cursor)
 
 downloaded_id = sync_local_files_with_db(cursor, downloaded_id)
 conn.commit()
-
-def show_downloaded_from_db(cursor):
-    cursor.execute("SELECT episodeId, date, local_path FROM downloaded")
-    rows = cursor.fetchall()
-
-    print("\n Загруженные эпизоды в базе данных:")
-    for row in rows:
-        print(f"EpisodeID: {row[0]}, Date: {row[1]}, Path: {row[2]}")
 
 # Comparing episode_ids_all with downloaded_id
 remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
@@ -134,9 +139,6 @@ for eid in to_download:
         print(f"Episode {eid} already downloaded. Skipping.")
         continue # skip function launch
     save_episode(int(eid))
-
-# Show the updated DB data
-show_downloaded_from_db(cursor)
 
 # Close connection
 conn.close()
