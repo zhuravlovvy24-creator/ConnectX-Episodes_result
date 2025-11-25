@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import sqlite3
 from datetime import datetime
+import subprocess
 
 # Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
@@ -34,6 +35,14 @@ EpisodeId = filtered_episodes['Id'].tolist()
 OUTPUT_DIR = Path("Episodes_output")
 #Create DataBase
 DB_PATH = "downloaded_episodes_id.db"
+# Path to db which is located on S3
+DB_S3_PATH = "s3://connectx-storage-37012/downloaded_episodes_id.db"
+
+# Download updated DB from S3
+def download_db_from_s3():
+    print("Downloading DB from S3...")
+    subprocess.run(["aws", "s3", "cp", DB_S3_PATH, DB_PATH], check=True)
+    print("DB downloaded successfully.")
 
 #Create DB and table
 def init_db():
@@ -49,7 +58,7 @@ def init_db():
     conn.commit()
     return conn, cursor
 
-EPISODE_LIMIT_SIZE = 15
+EPISODE_LIMIT_SIZE = 7
 
 #List of downloaded id's Beginning-----------------------------------
 # Get the list of all downloaded ids' from DB
@@ -116,8 +125,16 @@ def save_episode(episode_id: int):
     else:
         print(f"Request error for episode {episode_id}: status {re.status_code}")
 
+#Upload updated DB back to S3
+def upload_db_to_s3():
+    print("Uploading updated DB to S3...")
+    subprocess.run(["aws", "s3", "cp", DB_PATH, DB_S3_PATH], check=True)
+    print("DB uploaded successfully.")
+
 # Transform EpisodeId to str and filter for top score > 3000.0 to compare with downloaded_id
 episode_ids_all = [str(eid) for eid in EpisodeId if eid in high_score_episode_ids]
+
+download_db_from_s3()
 
 conn, cursor = init_db()
 downloaded_id = load_downloaded_ids(cursor)
@@ -142,7 +159,7 @@ for eid in to_download:
 
 # Close connection
 conn.close()
-
+upload_db_to_s3()
 #Hidden_____________
 # Function that input all episodes_ids and return filtered those that has to be downloaded
 #def get_new_episodes_id(all_ids: str):
