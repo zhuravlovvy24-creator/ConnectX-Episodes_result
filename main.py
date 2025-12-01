@@ -1,3 +1,5 @@
+from os.path import exists
+import botocore
 import pandas as pd
 import requests as requests
 import json
@@ -7,6 +9,7 @@ import sqlite3
 from datetime import datetime
 import subprocess
 import boto3
+from botocore.exceptions import ClientError
 
 # Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
@@ -40,8 +43,11 @@ DB_PATH = "downloaded_episodes_id.db"
 s3 = boto3.client('s3')
 #Set Bucket on s3
 BUCKET = "connectx-storage-37012"
+#Set Folder name on S3
+S3_PREFIX = "Episodes_output/"
 # Path to db which is located on S3
 DB_S3_PATH = "s3://connectx-storage-37012/downloaded_episodes_id.db"
+
 
 # Download updated DB from S3
 def download_db_from_s3():
@@ -75,7 +81,6 @@ def load_downloaded_ids(cursor):
 def sync_local_files_with_db(cursor, downloaded_id: set):
     downloaded_files = {f for f in os.listdir(OUTPUT_DIR)
                     if f.endswith('.json')}
-
     for filename in downloaded_files:
         try:
             existing_episode_id = int(os.path.splitext(filename)[0])
@@ -90,7 +95,6 @@ def sync_local_files_with_db(cursor, downloaded_id: set):
 
             # Add to set of downloaded IDs
             downloaded_id.add(str(existing_episode_id))
-
         except ValueError:
             # Skip files with unexpected names (e.g. not numeric)
             print(f"Skipping file '{filename}' (invalid episode ID format)")
@@ -140,6 +144,10 @@ def upload_db_to_s3():
     subprocess.run(["aws", "s3", "cp", DB_PATH, DB_S3_PATH], check=True)
     print("DB uploaded successfully.")
 
+#def remove_local_entries(cursor, output_dir="Episodes_output"):
+    #pattern = f"{output_dir}%"
+    #cursor.execute("DELETE FROM downloaded WHERE local_path LIKE ?", (pattern,))
+
 # Transform EpisodeId to str and filter for top score > 3000.0 to compare with downloaded_id
 episode_ids_all = [str(eid) for eid in EpisodeId if eid in high_score_episode_ids]
 
@@ -147,9 +155,10 @@ download_db_from_s3()
 
 conn, cursor = init_db()
 downloaded_id = load_downloaded_ids(cursor)
-
-downloaded_id = sync_local_files_with_db(cursor, downloaded_id)
 conn.commit()
+
+#downloaded_id = sync_local_files_with_db(cursor, downloaded_id)
+#conn.commit()
 
 # Comparing episode_ids_all with downloaded_id
 remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
@@ -157,13 +166,22 @@ remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
 # Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
 
-# Launch and Save the first 15 episodes
+# Launch and Save the first 7 episodes
 for eid in to_download:
-    # Duplicates verification
-    filepath = OUTPUT_DIR / f"{eid}.json"
-    if filepath.exists():
-        print(f"Episode {eid} already downloaded. Skipping.")
-        continue # skip function launch
+    key = f"{S3_PREFIX}{eid}.json"
+    # Duplicates verification with S3 Episodes_output folder
+    exists = True
+    try:
+        s3.head_object(Bucket=BUCKET, Key=key)
+    except ClientError as e:
+        if e.response['Error']['Code'] == '404':
+            exists = False
+        else:
+            raise
+    if exists:
+        print(f"Episode {eid} already exists in S3. Skipping.")
+        continue
+
     save_episode(int(eid))
 
 # Close connection
