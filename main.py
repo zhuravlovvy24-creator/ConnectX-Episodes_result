@@ -6,6 +6,7 @@ import os
 import sqlite3
 from datetime import datetime
 import subprocess
+import boto3
 
 # Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
@@ -35,6 +36,10 @@ EpisodeId = filtered_episodes['Id'].tolist()
 OUTPUT_DIR = Path("Episodes_output")
 #Create DataBase
 DB_PATH = "downloaded_episodes_id.db"
+#Set boto3
+s3 = boto3.client('s3')
+#Set Bucket on s3
+BUCKET = "connectx-storage-37012"
 # Path to db which is located on S3
 DB_S3_PATH = "s3://connectx-storage-37012/downloaded_episodes_id.db"
 
@@ -102,10 +107,15 @@ def save_episode(episode_id: int):
         try:
             # save replay
             replay = re.json()
-            OUTPUT_DIR.mkdir(exist_ok=True)
-            with open(OUTPUT_DIR / f'{episode_id}.json', 'w') as f:
-                json.dump(replay, f)
-            print(f"Episode {episode_id} successfully saved.")
+            json_bytes = json.dumps(replay).encode('utf-8')
+            key = f"Episodes_output/{episode_id}.json"
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=key,
+                Body=json_bytes,
+                ContentType="application/json"
+            )
+            print(f"Episode {episode_id} uploaded to s3://{BUCKET}/{key}")
 
             # Insert record into SQLite DB
             # -----------------------------
@@ -114,10 +124,9 @@ def save_episode(episode_id: int):
                            INSERT
                            OR IGNORE INTO downloaded (episodeId, date, local_path)
                            VALUES (?, ?, ?)
-                           """, (episode_id, date_now, str(filepath)))
+                           """, (episode_id, date_now, f"s3://{BUCKET}/{key}"))
             conn.commit()
             # -----------------------------
-
             # Append new ids in the downloaded list of episodes
             downloaded_id.add(str(episode_id))
         except Exception as e:
