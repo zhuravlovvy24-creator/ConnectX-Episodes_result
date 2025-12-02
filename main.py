@@ -9,6 +9,8 @@ import sqlite3
 from datetime import datetime
 import subprocess
 import boto3
+import io
+import zipfile
 from botocore.exceptions import ClientError
 
 # Installing Competitions.csv
@@ -45,9 +47,13 @@ s3 = boto3.client('s3')
 BUCKET = "connectx-storage-37012"
 #Set Folder name on S3
 S3_PREFIX = "Episodes_output/"
+# new folder for ZIP archives
+ARCHIVE_PREFIX = "archives/"
+# files per ZIP
+ARCHIVE_SIZE = 100
 # Path to db which is located on S3
 DB_S3_PATH = "s3://connectx-storage-37012/downloaded_episodes_id.db"
-
+EPISODE_LIMIT_SIZE = 101
 
 # Download updated DB from S3
 def download_db_from_s3():
@@ -68,8 +74,6 @@ def init_db():
     """)
     conn.commit()
     return conn, cursor
-
-EPISODE_LIMIT_SIZE = 7
 
 #List of downloaded id's Beginning-----------------------------------
 # Get the list of all downloaded ids' from DB
@@ -101,8 +105,22 @@ def sync_local_files_with_db(cursor, downloaded_id: set):
     return downloaded_id
 #List of downloaded id's End-----------------------------------------
 
+#Preparation for ZIP upload
+archive_number = 1
+current_batch = []
+#Get the latest archive in S3
+response = s3.list_objects_v2(Bucket=BUCKET, Prefix=S3_PREFIX)
+existing_archives = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.zip')]
+if existing_archives:
+    archive_number = max(int(k.replace(S3_PREFIX, '').replace('.zip','')) for k in existing_archives) + 1
+else:
+    archive_number = 1
+
+
 # Function for  saving the episodes results in json format
 def save_episode(episode_id: int):
+    global current_batch, archive_number
+
     # Create URL for request
     get_url = f"https://www.kaggleusercontent.com/episodes/{episode_id}.json"
     # request
@@ -112,15 +130,7 @@ def save_episode(episode_id: int):
             # save replay
             replay = re.json()
             json_bytes = json.dumps(replay).encode('utf-8')
-            key = f"Episodes_output/{episode_id}.json"
-            s3.put_object(
-                Bucket=BUCKET,
-                Key=key,
-                Body=json_bytes,
-                ContentType="application/json"
-            )
-            print(f"Episode {episode_id} uploaded to s3://{BUCKET}/{key}")
-
+            current_batch.append((f"{episode_id}.json", json_bytes))
             # Insert record into SQLite DB
             # -----------------------------
             date_now = datetime.now().isoformat(timespec='seconds')
@@ -128,15 +138,36 @@ def save_episode(episode_id: int):
                            INSERT
                            OR IGNORE INTO downloaded (episodeId, date, local_path)
                            VALUES (?, ?, ?)
-                           """, (episode_id, date_now, f"s3://{BUCKET}/{key}"))
+                           """, (episode_id, date_now, f"in-zip-{episode_id}.json"))
             conn.commit()
             # -----------------------------
             # Append new ids in the downloaded list of episodes
             downloaded_id.add(str(episode_id))
+
+            # if 100 episodes were downloaded - create ZIP and upload it
+            if len(current_batch) >= ARCHIVE_SIZE:
+                upload_current_batch()
+
         except Exception as e:
             print(f"JSON decode error for episode {episode_id}: {e}")
     else:
         print(f"Request error for episode {episode_id}: status {re.status_code}")
+
+def upload_current_batch():
+    global current_batch, archive_number
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
+        for filename, json_bytes in current_batch:
+            zipf.writestr(filename, json_bytes)
+
+    zip_buffer.seek(0)
+    s3_key = f"{S3_PREFIX}{archive_number}.zip"
+    s3.upload_fileobj(zip_buffer, BUCKET, s3_key)
+    print(f"Uploaded ZIP: {s3_key} ({len(current_batch)} episodes)")
+
+    archive_number += 1
+    current_batch = []
 
 #Upload updated DB back to S3
 def upload_db_to_s3():
@@ -168,21 +199,15 @@ to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
 
 # Launch and Save the first 7 episodes
 for eid in to_download:
-    key = f"{S3_PREFIX}{eid}.json"
-    # Duplicates verification with S3 Episodes_output folder
-    exists = True
-    try:
-        s3.head_object(Bucket=BUCKET, Key=key)
-    except ClientError as e:
-        if e.response['Error']['Code'] == '404':
-            exists = False
-        else:
-            raise
-    if exists:
+    #Skip if episode is in DB
+    if str(eid) in downloaded_id:
         print(f"Episode {eid} already exists in S3. Skipping.")
         continue
-
     save_episode(int(eid))
+
+#Upload rest episodes in current batch
+if current_batch:
+        upload_current_batch()
 
 # Close connection
 conn.close()
