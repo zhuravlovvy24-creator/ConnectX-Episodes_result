@@ -1,5 +1,3 @@
-from os.path import exists
-import botocore
 import pandas as pd
 import requests as requests
 import json
@@ -13,12 +11,12 @@ import io
 import zipfile
 from botocore.exceptions import ClientError
 
-# Installing Competitions.csv
+#Installing Competitions.csv
 df = pd.read_csv('Competitions.csv')
-# Filter rows where id == 17592
+#Filter rows where id == 17592
 competition_id = df[df['Slug'] == 'connectx']['Id']
-# Load the episodes dataset
-episodes_df = pd.read_csv('Episodes.csv')  # adjust the path if needed
+#Load the episodes dataset
+episodes_df = pd.read_csv('Episodes.csv')
 #Set the min top players with Score >3000
 LOWEST_SCORE_THRESH = 3000.0
 #Load the EpisodeAgents dataset
@@ -29,15 +27,15 @@ for chunk in pd.read_csv('EpisodeAgents.csv', chunksize=chunksize,
                          dtype={'EpisodeId': 'int32', 'UpdatedScore': 'float32'}):
     high_score_chunk = chunk[chunk['UpdatedScore'] > LOWEST_SCORE_THRESH]
     high_score_episode_ids.update(high_score_chunk['EpisodeId'].unique())
-# Filter rows where competitionId == 17592
+#Filter rows where competitionId == 17592
 filtered_episodes = episodes_df[episodes_df['CompetitionId'] == competition_id.item()]
 #Create Data Frame with the episodes >3000
 filtered_episodes_df = filtered_episodes[filtered_episodes['Id'].isin(high_score_episode_ids)]
-# save into CSV
+#save into CSV
 filtered_episodes_df.to_csv('FilteredEpisodes_UpdatedScoreAbove3000.csv', index=False)
-# Get the list of episode IDs
+#Get the list of episode IDs
 EpisodeId = filtered_episodes['Id'].tolist()
-# Create output_folder for episodes results
+#Create output_folder for episodes results
 OUTPUT_DIR = Path("Episodes_output")
 #Create DataBase
 DB_PATH = "downloaded_episodes_id.db"
@@ -47,15 +45,15 @@ s3 = boto3.client('s3')
 BUCKET = "connectx-storage-37012"
 #Set Folder name on S3
 S3_PREFIX = "Episodes_output/"
-# new folder for ZIP archives
+#new folder for ZIP archives
 ARCHIVE_PREFIX = "archives/"
-# files per ZIP
+#files per ZIP
 ARCHIVE_SIZE = 100
-# Path to db which is located on S3
+#Path to db which is located on S3
 DB_S3_PATH = "s3://connectx-storage-37012/downloaded_episodes_id.db"
-EPISODE_LIMIT_SIZE = 101
+EPISODE_LIMIT_SIZE = 50
 
-# Download updated DB from S3
+#Download updated DB from S3
 def download_db_from_s3():
     print("Downloading DB from S3...")
     subprocess.run(["aws", "s3", "cp", DB_S3_PATH, DB_PATH], check=True)
@@ -76,10 +74,55 @@ def init_db():
     return conn, cursor
 
 #List of downloaded id's Beginning-----------------------------------
-# Get the list of all downloaded ids' from DB
+#Get the list of all downloaded ids' from DB
 def load_downloaded_ids(cursor):
     cursor.execute("SELECT episodeId FROM downloaded")
     return {str(row[0]) for row in cursor.fetchall()}
+
+# ---------------- S3 helpers ----------------
+#Return list of all S3 keys of archives
+def list_archive_keys_all():
+    archives = []
+    kwargs = {"Bucket": BUCKET, "Prefix": S3_PREFIX}
+    while True:
+        resp = s3.list_objects_v2(**kwargs)
+        contents = resp.get("Contents") or []
+        for obj in contents:
+            key = obj["Key"]
+            if key.endswith(".zip"):
+                archives.append(key)
+        if resp.get("IsTruncated"):
+            kwargs["ContinuationToken"] = resp.get("NextContinuationToken")
+            continue
+        break
+    #Sort by numbers in name (Episodes_output/{n}.zip)
+    def key_to_num(k):
+        try:
+            name = k.replace(S3_PREFIX, "")
+            return int(name.replace(".zip", ""))
+        except:
+            return 0
+    archives.sort(key=key_to_num)
+    return archives
+#Download zip-archive and return dict. Return empty is there is no archive
+def download_archive_to_dict(s3_key):
+    buf = io.BytesIO()
+    try:
+        s3.download_fileobj(BUCKET, s3_key, buf)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey"):
+            return {}
+        raise
+    buf.seek(0)
+    files = {}
+    with zipfile.ZipFile(buf, "r") as z:
+        for name in z.namelist():
+            files[name] = z.read(name)
+    return files
+
+# ---------------- Core: upload current_batch into proper archives ----------------
+current_batch = []  # list of (filename, bytes)
 
 #Add already-downloaded files to DB
 def sync_local_files_with_db(cursor, downloaded_id: set):
@@ -91,7 +134,7 @@ def sync_local_files_with_db(cursor, downloaded_id: set):
             filepath = OUTPUT_DIR / filename
             file_timestamp = datetime.fromtimestamp(filepath.stat().st_mtime).isoformat(timespec='seconds')
 
-            # Insert into DB if not already there
+            #Insert into DB if not already there
             cursor.execute("""
                 INSERT OR IGNORE INTO downloaded (episodeId, date, local_path)
                 VALUES (?, ?, ?)
@@ -100,74 +143,132 @@ def sync_local_files_with_db(cursor, downloaded_id: set):
             # Add to set of downloaded IDs
             downloaded_id.add(str(existing_episode_id))
         except ValueError:
-            # Skip files with unexpected names (e.g. not numeric)
+            #Skip files with unexpected names (e.g. not numeric)
             print(f"Skipping file '{filename}' (invalid episode ID format)")
     return downloaded_id
 #List of downloaded id's End-----------------------------------------
 
-#Preparation for ZIP upload
-archive_number = 1
-current_batch = []
-#Get the latest archive in S3
-response = s3.list_objects_v2(Bucket=BUCKET, Prefix=S3_PREFIX)
-existing_archives = [obj['Key'] for obj in response.get('Contents', []) if obj['Key'].endswith('.zip')]
-if existing_archives:
-    archive_number = max(int(k.replace(S3_PREFIX, '').replace('.zip','')) for k in existing_archives) + 1
-else:
-    archive_number = 1
-
-
-# Function for  saving the episodes results in json format
-def save_episode(episode_id: int):
-    global current_batch, archive_number
-
-    # Create URL for request
-    get_url = f"https://www.kaggleusercontent.com/episodes/{episode_id}.json"
-    # request
-    re = requests.get(get_url)
-    if re.status_code == 200:
-        try:
-            # save replay
-            replay = re.json()
-            json_bytes = json.dumps(replay).encode('utf-8')
-            current_batch.append((f"{episode_id}.json", json_bytes))
-            # Insert record into SQLite DB
-            # -----------------------------
-            date_now = datetime.now().isoformat(timespec='seconds')
-            cursor.execute("""
-                           INSERT
-                           OR IGNORE INTO downloaded (episodeId, date, local_path)
-                           VALUES (?, ?, ?)
-                           """, (episode_id, date_now, f"in-zip-{episode_id}.json"))
-            conn.commit()
-            # -----------------------------
-            # Append new ids in the downloaded list of episodes
+#Function for  saving the episodes results in json format
+def save_episode(episode_id, conn, cursor, downloaded_id):
+    global current_batch
+    url = f"https://www.kaggleusercontent.com/episodes/{episode_id}.json"
+    r = requests.get(url)
+    if r.status_code != 200:
+        print(f"Request error for episode {episode_id}: status {r.status_code}")
+        return
+    try:
+        bytes_content = json.dumps(r.json()).encode("utf-8")
+        fname = f"{episode_id}.json"
+        #Avoid duplication
+        if fname not in {n for n, _ in current_batch}:
+            current_batch.append((fname, bytes_content))
             downloaded_id.add(str(episode_id))
-
-            # if 100 episodes were downloaded - create ZIP and upload it
+            # If locally >= ARCHIVE_SIZE, to record
             if len(current_batch) >= ARCHIVE_SIZE:
-                upload_current_batch()
+                upload_current_batch(conn, cursor)
+    except Exception as e:
+        print(f"JSON decode error for episode {episode_id}: {e}")
+#Input file in 1-st available batch, upload DB
+def upload_current_batch(conn, cursor):
+    global current_batch
 
-        except Exception as e:
-            print(f"JSON decode error for episode {episode_id}: {e}")
+    if not current_batch:
+        return
+
+    #Get the list of archives in order
+    archives = list_archive_keys_all()
+
+    #Find the index of first semi-full archive
+    target_idx = None
+    for i, key in enumerate(archives):
+        cnt = get_archive_filecount(key)
+        if cnt < ARCHIVE_SIZE:
+            target_idx = i
+            break
+
+    #If there is no semi-full - start with the new (number = len(archives)+1)
+    if target_idx is None:
+        target_num = len(archives) + 1
     else:
-        print(f"Request error for episode {episode_id}: status {re.status_code}")
+        # извлечь номер архива из key
+        key = archives[target_idx]
+        num_str = key.replace(S3_PREFIX, "").replace(".zip", "")
+        try:
+            target_num = int(num_str)
+        except:
+            target_num = len(archives) + 1
 
-def upload_current_batch():
-    global current_batch, archive_number
+    # Fill the batch
+    while current_batch:
+        zip_filename = f"{target_num}.zip"
+        s3_key = f"{S3_PREFIX}{zip_filename}"
 
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, "w", compression=zipfile.ZIP_DEFLATED) as zipf:
-        for filename, json_bytes in current_batch:
-            zipf.writestr(filename, json_bytes)
+        #Download existing files
+        existing_files = download_archive_to_dict(s3_key)
+        existing_count = len(existing_files)
 
-    zip_buffer.seek(0)
-    s3_key = f"{S3_PREFIX}{archive_number}.zip"
-    s3.upload_fileobj(zip_buffer, BUCKET, s3_key)
-    print(f"Uploaded ZIP: {s3_key} ({len(current_batch)} episodes)")
+        merged = list(existing_files.items())
+        #Add current_batch items
+        merged_names = {name for name, _ in merged}
+        for fname, content in current_batch:
+            if fname in merged_names:
+                #Update in merged
+                for idx, (n, c) in enumerate(merged):
+                    if n == fname:
+                        merged[idx] = (fname, content)
+                        break
+            else:
+                merged.append((fname, content))
+                merged_names.add(fname)
 
-    archive_number += 1
-    current_batch = []
+        # If merged <= ARCHIVE_SIZE — archive is full and exit
+        if len(merged) <= ARCHIVE_SIZE:
+            to_write = merged
+            remainder = []
+        else:
+            to_write = merged[:ARCHIVE_SIZE]
+            remainder = merged[ARCHIVE_SIZE:]
+
+        #Create zip с to_write
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+            for fname, content in to_write:
+                z.writestr(fname, content)
+        buf.seek(0)
+
+        #Upload on S3
+        s3.upload_fileobj(buf, BUCKET, s3_key)
+        print(f"Uploaded/Updated {zip_filename}: now contains {len(to_write)} files")
+
+        #Update DB with files in to_write
+        date_now = datetime.now().isoformat(timespec="seconds")
+        for fname, _ in to_write:
+            episode_id = int(fname.replace(".json", ""))
+            s3_full_path = f"s3://{BUCKET}/{S3_PREFIX}{zip_filename}/{fname}"
+            cursor.execute("""
+                INSERT OR REPLACE INTO downloaded (episodeId, date, local_path)
+                VALUES (?, ?, ?)
+            """, (episode_id, date_now, s3_full_path))
+        conn.commit()
+
+        #Prepare new current_batch from remainder (rest files)
+        current_batch = [(fname, content) for fname, content in remainder]
+
+        #Go to new archive
+        target_num += 1
+
+def get_archive_filecount(s3_key):
+    buf = io.BytesIO()
+    try:
+        s3.download_fileobj(BUCKET, s3_key, buf)
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in ("404", "NoSuchKey"):
+            return 0
+        raise
+    buf.seek(0)
+    with zipfile.ZipFile(buf, "r") as z:
+        return len(z.namelist())
 
 #Upload updated DB back to S3
 def upload_db_to_s3():
@@ -176,10 +277,10 @@ def upload_db_to_s3():
     print("DB uploaded successfully.")
 
 #def remove_local_entries(cursor, output_dir="Episodes_output"):
-    #pattern = f"{output_dir}%"
+    #pattern = "s3://connectx-storage-%"
     #cursor.execute("DELETE FROM downloaded WHERE local_path LIKE ?", (pattern,))
 
-# Transform EpisodeId to str and filter for top score > 3000.0 to compare with downloaded_id
+#Transform EpisodeId to str and filter for top score > 3000.0 to compare with downloaded_id
 episode_ids_all = [str(eid) for eid in EpisodeId if eid in high_score_episode_ids]
 
 download_db_from_s3()
@@ -191,25 +292,28 @@ conn.commit()
 #downloaded_id = sync_local_files_with_db(cursor, downloaded_id)
 #conn.commit()
 
-# Comparing episode_ids_all with downloaded_id
+#Comparing episode_ids_all with downloaded_id
 remaining_ids = [eid for eid in episode_ids_all if eid not in downloaded_id]
 
-# Limit download size to EPISODE_LIMIT_SIZE
+#Limit download size to EPISODE_LIMIT_SIZE
 to_download = remaining_ids[:EPISODE_LIMIT_SIZE]
 
-# Launch and Save the first 7 episodes
+#Launch and Save the first 7 episodes
 for eid in to_download:
     #Skip if episode is in DB
     if str(eid) in downloaded_id:
         print(f"Episode {eid} already exists in S3. Skipping.")
         continue
-    save_episode(int(eid))
+    save_episode(int(eid),conn, cursor,downloaded_id)
 
 #Upload rest episodes in current batch
 if current_batch:
-        upload_current_batch()
+    upload_current_batch(conn, cursor)
 
-# Close connection
+#remove_local_entries(cursor)
+#conn.commit()
+
+#Close connection
 conn.close()
 upload_db_to_s3()
 #Hidden_____________
