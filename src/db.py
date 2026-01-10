@@ -3,6 +3,7 @@ import io
 import os
 import sqlite3
 import zipfile
+from sqlite3 import Connection, Cursor
 from typing import Any
 import src.s3
 from src import consts, s3
@@ -179,8 +180,21 @@ def update_db(episode_list: list[tuple[str, bytes]], archive_name: str, cursor: 
     print(f"Database updated with {len(episode_list)} episodes in archive: {archive_name}")
 
 
-def connect_db(db_path: str):
-    conn = sqlite3.connect(db_path)
-    cursor = conn.cursor()
-    print(f"Successfully connected to database: {db_path}")
-    return None
+def connect_db(db_path: str) -> tuple[None, None] | tuple[Connection, Cursor]:
+    try:
+        # --- Connection and Migration Logic (omitted for brevity) ---
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # ... migration checks
+
+        return conn, cursor
+
+    except sqlite3.Error as e:
+        # Handle specific SQLite errors (e.g., bad SQL, schema issues)
+        print(f"FATAL SQLite connection error: {e}")
+        return None, None
+
+    except Exception as e:
+        # Handle all other general errors (e.g., file system, I/O)
+        print(f"FATAL General error in connect_db: {e}")
+        return None, None

@@ -1,5 +1,7 @@
 import io
+import os
 import subprocess
+import tempfile
 import zipfile
 import boto3
 from botocore.exceptions import ClientError, NoCredentialsError
@@ -7,12 +9,34 @@ from src import consts
 
 s3 = boto3.resource('s3')
 s3_client = boto3.client('s3')
-#Download updated DB from S3
-def download_db_from_s3():
-    print("Downloading DB from S3...")
-    subprocess.run(["aws", "s3", "cp", consts.DB_S3_PATH, consts.DB_PATH], check=True)
-    print("DB downloaded successfully.")
 
+#Download updated DB from S3
+#def download_db_from_s3():
+    #print("Downloading DB from S3...")
+    #subprocess.run(["aws", "s3", "cp", consts.DB_S3_PATH, consts.DB_PATH], check=True)
+    #print("DB downloaded successfully.")
+
+def download_db_from_s3(s3_key: str) -> str | None:
+    local_path = os.path.join(tempfile.gettempdir(), s3_key)
+    if s3_client is None:
+        print("ERROR: S3 client is not available due to initialization failure.")
+        return None
+    try:
+        # Check if the file exists using head_object before downloading (more efficient check)
+        # If head_object fails, it raises an exception.
+        s3_client.head_object(Bucket=consts.BUCKET, Key=s3_key)
+
+        # If the file exists, proceed with the download
+        s3_client.download_file(
+            Bucket=consts.BUCKET,
+            Key=s3_key,
+            Filename=local_path
+        )
+        print("DB downloaded successfully.")
+        return local_path
+
+    except ClientError as e:
+        error_code = e.response.get('Error', {}).get('Code')
 
 # ---------------- S3 helpers ----------------
 #Return list of all S3 keys of archives
@@ -81,14 +105,6 @@ def upload_db_to_s3():
 
 
 def upload_to_s3(file_buffer: io.BytesIO, bucket_name: str, s3_key: str):
-    """
-    Uploads a file-like object (e.g., in-memory ZIP buffer) to S3.
-
-    Args:
-        file_buffer: The io.BytesIO object containing the data.
-        bucket_name: The name of the S3 bucket (e.g., consts.BUCKET).
-        s3_key: The destination S3 key/path.
-    """
     try:
         print(f"Uploading file to S3: s3://{bucket_name}/{s3_key}")
 

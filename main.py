@@ -1,5 +1,4 @@
 import io
-import sqlite3
 import zipfile
 import pandas as pd
 import uuid
@@ -11,10 +10,9 @@ from src.process_kaggle import download_episode, extract_ids
 
 def create_archive(episode_list: list[tuple[str, bytes]]) -> tuple[str, io.BytesIO]:
    archive_name = f"archive-{uuid.uuid4()}.zip"
-   #create zip archive here ...
+   #create zip archive here
    buf = io.BytesIO()
    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
-       # ⬅️ FIXED: Unpack the tuple here to get both the ID and the content bytes
        for episode_id, content in episode_list:
            json_filename = f"{episode_id}.json"
            z.writestr(json_filename, content)
@@ -23,20 +21,12 @@ def create_archive(episode_list: list[tuple[str, bytes]]) -> tuple[str, io.Bytes
    return archive_name, buf
 
 def main():
-    # Define connection objects up front to ensure they are available to the whole function
-    conn: sqlite3.Connection | None = None
-    cursor: sqlite3.Cursor | None = None
     db_path: str = consts.DB_PATH
     df = pd.read_csv('FilteredEpisodes_UpdatedScoreAbove3000.csv')
 
     all_filtered_ids = extract_ids(df)
 
-    #None in case db doesn't exist yet on s3
-    #db_path: str | None = s3.download_db_from_s3()
-    #if db_path is None:
-    #conn,cursor = db.init_db()
-    # ...
-    temp_db_path: str | None = s3.download_db_from_s3()
+    temp_db_path: str | None = s3.download_db_from_s3(db_path)
 
     if temp_db_path is None:
         # 2a. DB NOT FOUND: db_path remains consts.DB_PATH (a string)
@@ -44,7 +34,8 @@ def main():
     else:
         # 2b. DB FOUND: db_path is updated to temp_db_path (a string)
         db_path = temp_db_path
-        conn, cursor = db.connect_db(db_path)
+        result = db.connect_db(db_path)
+        conn, cursor = result[0], result[1] if result else (None, None)  # Defensive unpacking
 
     new_ids = db.filter_new_ids(all_filtered_ids, downloaded_ids)
 
@@ -56,7 +47,6 @@ def main():
         download_result = download_episode(episode_id)
 
         if download_result:
-            # ⬅️ This adds the (ID, content) tuple.
             cur_episode_list.append(download_result)
 
         counter += 1
