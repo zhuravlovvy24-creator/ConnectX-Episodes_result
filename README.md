@@ -1,5 +1,5 @@
 # ConnectX-Episodes_result
-**What this project does:**
+***What this project does:***
 
 This tool automatically collects and stores high-level game data from Kaggle.
 
@@ -11,7 +11,7 @@ In simple terms:
 
 ____________________________
 
-**Quick Start Guide**
+***Quick Start Guide:***
 
 1. Setup
 
@@ -51,7 +51,7 @@ Bash
 python main.py
 ```
 
-**Tools Used:**
+***Tools Used:***
 
 ```Python``` – The main programming language.
 
