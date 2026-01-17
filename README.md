@@ -1,5 +1,6 @@
 # ConnectX-Episodes_result
 **What this project does**
+
 This tool automatically collects and stores high-level game data from Kaggle.
 
 In simple terms:
