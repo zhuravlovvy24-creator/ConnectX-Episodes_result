@@ -19,29 +19,29 @@ Make sure you have Python installed and your AWS and Kaggle keys ready on your c
 
 Open your terminal and run these commands to get the code and the necessary tools:
 
-Bash
+```Bash```
 
-git clone https://github.com/zhuravlovvy24-creator/ConnectX-Episodes_result.git
+```git clone https://github.com/zhuravlovvy24-creator/ConnectX-Episodes_result.git```
 
-cd ConnectX-Episodes_result
+```cd ConnectX-Episodes_result```
 
-pip install -r requirements.txt
+```pip install -r requirements.txt```
 
 3. Configure
 
 Open src/consts.py and make sure your S3 Bucket name is correct:
 
-Python
+```Python```
 
-BUCKET = "your-actual-s3-bucket-name"
+```BUCKET = "your-actual-s3-bucket-name"```
 
 4. Run
 
 Start the process by running:
 
-Bash
+```Bash```
 
-python main.py
+```python main.py```
 
 **Tools Used**
 
